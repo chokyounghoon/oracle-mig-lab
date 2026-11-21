@@ -1,0 +1,109 @@
+-- =============================================================================
+-- [ora-tgt] Target Database Initialization Script
+-- =============================================================================
+SET SERVEROUTPUT ON SIZE UNLIMITED;
+SET DEFINE OFF;
+SET FEEDBACK ON;
+
+-- 1. PDB(FREEPDB1)로 전환
+ALTER SESSION SET CONTAINER = FREEPDB1;
+
+-- 2. mig_user 생성 및 비밀번호/잠금해제 보장
+DECLARE
+    v_cnt NUMBER;
+BEGIN
+    SELECT COUNT(*) INTO v_cnt FROM dba_users WHERE username = 'MIG_USER';
+    IF v_cnt = 0 THEN
+        EXECUTE IMMEDIATE 'CREATE USER mig_user IDENTIFIED BY oracle DEFAULT TABLESPACE USERS TEMPORARY TABLESPACE TEMP QUOTA UNLIMITED ON USERS';
+        EXECUTE IMMEDIATE 'GRANT CONNECT, RESOURCE TO mig_user';
+    ELSE
+        EXECUTE IMMEDIATE 'ALTER USER mig_user IDENTIFIED BY oracle ACCOUNT UNLOCK';
+        EXECUTE IMMEDIATE 'ALTER USER mig_user QUOTA UNLIMITED ON USERS';
+    END IF;
+    EXECUTE IMMEDIATE 'ALTER USER sys IDENTIFIED BY oracle';
+    EXECUTE IMMEDIATE 'ALTER USER system IDENTIFIED BY oracle';
+END;
+/
+
+-- 3. 시스템 파라미터 및 권한 설정 (SYS)
+ALTER SYSTEM SET PARALLEL_MAX_SERVERS = 16 SCOPE = BOTH;
+
+GRANT CREATE DATABASE LINK, CREATE PUBLIC DATABASE LINK TO mig_user;
+GRANT CREATE TABLE, CREATE VIEW, CREATE SEQUENCE, CREATE PROCEDURE TO mig_user;
+GRANT SELECT_CATALOG_ROLE, SELECT ANY DICTIONARY TO mig_user;
+GRANT SELECT ON V_$SESSION TO mig_user;
+GRANT SELECT ON V_$SESSION_LONGOPS TO mig_user;
+GRANT SELECT ON V_$PX_SESSION TO mig_user;
+ALTER USER mig_user QUOTA UNLIMITED ON USERS;
+
+-- 4. 테이블 및 인덱스 생성 (ora-src와 동일 구조, 데이터 0건)
+BEGIN
+    EXECUTE IMMEDIATE 'DROP TABLE mig_user.TB_CARD_TXN CASCADE CONSTRAINTS PURGE';
+EXCEPTION WHEN OTHERS THEN NULL; END;
+/
+BEGIN
+    EXECUTE IMMEDIATE 'DROP TABLE mig_user.TB_CUST_MST CASCADE CONSTRAINTS PURGE';
+EXCEPTION WHEN OTHERS THEN NULL; END;
+/
+
+CREATE TABLE mig_user.TB_CUST_MST (
+    CUST_ID     NUMBER(10)      CONSTRAINT PK_TB_CUST_MST PRIMARY KEY,
+    CUST_NM     VARCHAR2(50)    NOT NULL,
+    BIRTH_DT    VARCHAR2(8),
+    GENDER      CHAR(1),
+    GRADE       VARCHAR2(10)    DEFAULT 'SILVER' NOT NULL,
+    JOIN_DT     DATE            DEFAULT SYSDATE  NOT NULL,
+    STATUS      VARCHAR2(10)    DEFAULT 'ACTIVE' NOT NULL
+);
+
+CREATE TABLE mig_user.TB_CARD_TXN (
+    TXN_ID       NUMBER(14)      CONSTRAINT PK_TB_CARD_TXN PRIMARY KEY,
+    CUST_ID      NUMBER(10)      NOT NULL CONSTRAINT FK_CARD_CUST REFERENCES mig_user.TB_CUST_MST(CUST_ID),
+    CARD_NO      VARCHAR2(16)    NOT NULL,
+    TXN_DT       DATE            NOT NULL,
+    TXN_AMT      NUMBER(12, 2)   NOT NULL,
+    MERCHANT_NM  VARCHAR2(100)   NOT NULL,
+    TXN_TYPE     VARCHAR2(20)    DEFAULT 'PAYMENT' NOT NULL,
+    APPROVAL_NO  VARCHAR2(20),
+    STATUS       VARCHAR2(10)    DEFAULT 'APPROVED' NOT NULL
+);
+
+CREATE INDEX mig_user.IDX_TXN_DT ON mig_user.TB_CARD_TXN(TXN_DT);
+CREATE INDEX mig_user.IDX_TXN_AMT ON mig_user.TB_CARD_TXN(TXN_AMT);
+CREATE INDEX mig_user.IDX_TXN_CUST_ID ON mig_user.TB_CARD_TXN(CUST_ID);
+
+-- 5. mig_user 스키마에 PROD_MIG_LINK 생성
+-- 요구사항: CONNECT TO mig_user IDENTIFIED BY oracle USING '//ora-src:1521/FREEPDB1'
+CREATE OR REPLACE PROCEDURE mig_user.create_mig_dblink AS
+BEGIN
+    BEGIN
+        EXECUTE IMMEDIATE 'DROP DATABASE LINK PROD_MIG_LINK';
+    EXCEPTION WHEN OTHERS THEN NULL; END;
+    EXECUTE IMMEDIATE 'CREATE DATABASE LINK PROD_MIG_LINK CONNECT TO mig_user IDENTIFIED BY oracle USING ''//ora-src:1521/FREEPDB1''';
+END;
+/
+EXEC mig_user.create_mig_dblink;
+DROP PROCEDURE mig_user.create_mig_dblink;
+
+-- PUBLIC DB Link도 함께 생성 (관리자 및 기타 세션 호환용)
+BEGIN
+    EXECUTE IMMEDIATE 'DROP PUBLIC DATABASE LINK PROD_MIG_LINK';
+EXCEPTION WHEN OTHERS THEN NULL; END;
+/
+CREATE PUBLIC DATABASE LINK PROD_MIG_LINK CONNECT TO mig_user IDENTIFIED BY oracle USING '//ora-src:1521/FREEPDB1';
+
+-- 6. 준비 완료 메시지 (데이터 0건 확인)
+DECLARE
+    v_cust_cnt NUMBER;
+    v_txn_cnt  NUMBER;
+BEGIN
+    SELECT COUNT(*) INTO v_cust_cnt FROM mig_user.TB_CUST_MST;
+    SELECT COUNT(*) INTO v_txn_cnt  FROM mig_user.TB_CARD_TXN;
+    DBMS_OUTPUT.PUT_LINE('================================================================');
+    DBMS_OUTPUT.PUT_LINE('  [ora-tgt 초기화 완료]');
+    DBMS_OUTPUT.PUT_LINE('  - TB_CUST_MST 건수 : ' || v_cust_cnt || ' (마이그레이션 대상 빈 테이블)');
+    DBMS_OUTPUT.PUT_LINE('  - TB_CARD_TXN 건수 : ' || v_txn_cnt || ' (마이그레이션 대상 빈 테이블)');
+    DBMS_OUTPUT.PUT_LINE('  - PROD_MIG_LINK    : //ora-src:1521/FREEPDB1 생성 완료');
+    DBMS_OUTPUT.PUT_LINE('================================================================');
+END;
+/

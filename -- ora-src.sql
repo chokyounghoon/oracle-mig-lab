@@ -1,0 +1,5 @@
+-- ora-src
+
+
+--1.        
+SELECT CURRENT_SCN FROM V$DATABASE@PROD_MIG_LINK;

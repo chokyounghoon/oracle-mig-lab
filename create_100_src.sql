@@ -1,0 +1,47 @@
+-- Create 100 tables on ora-src with 100k rows each
+SET TIMING ON
+SET SERVEROUTPUT ON SIZE UNLIMITED
+
+PROMPT >>> Creating seed table with 100,000 rows...
+BEGIN
+    EXECUTE IMMEDIATE 'DROP TABLE TMP_SEED_100K PURGE';
+EXCEPTION WHEN OTHERS THEN NULL;
+END;
+/
+
+CREATE TABLE TMP_SEED_100K NOLOGGING AS
+SELECT LEVEL AS ID,
+       'CD_' || LPAD(LEVEL, 7, '0') AS CODE,
+       ROUND(DBMS_RANDOM.VALUE(10, 5000), 2) AS AMOUNT,
+       CASE WHEN MOD(LEVEL, 2) = 0 THEN 'Y' ELSE 'N' END AS STATUS,
+       TRUNC(SYSDATE - MOD(LEVEL, 365)) AS CREATE_DT
+  FROM DUAL
+CONNECT BY LEVEL <= 100000;
+
+PROMPT >>> Creating 100 tables (TB_BIZ_001 ~ TB_BIZ_100) with 100k rows each...
+DECLARE
+    v_tbl VARCHAR2(30);
+    t_start TIMESTAMP := SYSTIMESTAMP;
+BEGIN
+    FOR i IN 1..100 LOOP
+        v_tbl := 'TB_BIZ_' || LPAD(i, 3, '0');
+        BEGIN
+            EXECUTE IMMEDIATE 'DROP TABLE ' || v_tbl || ' CASCADE CONSTRAINTS PURGE';
+        EXCEPTION WHEN OTHERS THEN NULL;
+        END;
+        EXECUTE IMMEDIATE 'CREATE TABLE ' || v_tbl || ' NOLOGGING AS SELECT * FROM TMP_SEED_100K';
+        EXECUTE IMMEDIATE 'ALTER TABLE ' || v_tbl || ' ADD CONSTRAINT PK_' || v_tbl || ' PRIMARY KEY (ID)';
+        EXECUTE IMMEDIATE 'CREATE INDEX IDX_' || v_tbl || '_DT ON ' || v_tbl || '(CREATE_DT)';
+        EXECUTE IMMEDIATE 'ALTER TABLE ' || v_tbl || ' LOGGING';
+        IF MOD(i, 20) = 0 THEN
+            DBMS_OUTPUT.PUT_LINE('  -> ' || i || '/100 tables created...');
+        END IF;
+    END LOOP;
+    DBMS_OUTPUT.PUT_LINE('>>> 100 tables created in ' || (SYSTIMESTAMP - t_start));
+END;
+/
+
+DROP TABLE TMP_SEED_100K PURGE;
+
+SELECT COUNT(*) AS TOTAL_TABLES FROM USER_TABLES;
+EOF
